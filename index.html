@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <title>PILOT</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;700&display=swap">
+  <style>
+    body{font-family:"Noto Sans JP",sans-serif;text-align:center;padding:2rem;line-height:1.6}
+    #choiceArea button{font-size:1.6rem;margin:1rem;padding:.6rem 2.5rem;border:2px solid #444;border-radius:.5rem;cursor:pointer}
+    #choiceArea button:hover{background:#eee}
+    .hidden{display:none}
+    #feedback.correct{color:#009900;font-weight:bold}
+    #feedback.wrong{color:#d40000;font-weight:bold}
+    #loading{font-weight:bold}
+  </style>
+</head>
+<body>
+  <h1>+</h1>
+
+  <p id="loading">CSV 로딩 중...</p>
+
+  <section id="startArea" class="hidden">
+    <p>이것은 일본어 음성 지각을 확인하는 실험입니다. <br>조용한 환경에서 반드시 헤드폰을 착용하고 진행해 주세요.<br>또, 소리가 확실하게 들릴 만큼 볼륨을 키워 주세요.<br>
+      〜です라는 소리를 주의깊게 듣고 'トーです'로 들리는지 'トです'로 들리는지 클릭하여 응답하시면 됩니다.<br>애매하다고 생각되는 경우에도 더 가깝다고 느껴지는 발음을 골라 주셔야 합니다.<br>너무 깊게 생각하지 말고 선택해 주세요.<br>
+      <br>준비되셨다면 <strong>Start</strong>를 누르세요.</p>
+    <button id="startBtn" disabled>Start</button>
+  </section>
+
+  <section id="phaseArea" class="hidden">
+    <p id="phaseMsg"></p>
+    <button id="phaseNextBtn">다음</button>
+  </section>
+
+  <section id="trialArea" class="hidden">
+     <p id="instruction"></p>
+    <div id="choiceArea"></div>
+    <p id="feedback" class="hidden"></p>
+  </section>
+
+  <section id="finishArea" class="hidden">
+    <h2>실험이 종료되었습니다!</h2>
+    <p>참여해 주셔서 정말 감사합니다.<br>아래 버튼을 눌러 결과 파일을 저장한 뒤, minnkim@snu.ac.kr 또는 제 카카오톡을 통해 보내 주시면 감사하겠습니다.<br>행복하세요!</p>
+    <button id="downloadBtn">Download results.csv</button>
+  </section>
+
+  <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+  <script>
+  /* ===== CONFIG ===== */
+  // 두 개의 실험 CSV 중 하나를 무작위 선택
+const CSV_LIST  = ['example.csv'];
+let   CSV_PATH  = CSV_LIST[Math.floor(Math.random()*CSV_LIST.length)];
+
+const AUDIO_DIR  = 'audio/';
+const AUDIO_DELAY = 20;
+const SOUND_OK   = 'okay.mp3';
+const SOUND_BEEP = 'beep.mp3';
+
+  // 반복 횟수
+  const PRE_REPS   = 3;
+  const TRAIN_REPS = 10;
+  const POST_REPS  = 3;
+
+  /* ===== STATE ===== */
+  let trials = [];
+  let idx = -1;
+  const logs = [];
+  let firstTrainIdx = 0;
+  let firstPostIdx  = 0;
+  let currentAudio  = null;
+  let trainShown=false, postShown=false;
+  const $ = q=>document.querySelector(q);
+
+  const shuffle=a=>{for(let i=a.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[a[i],a[j]]=[a[j],a[i]];}return a;};
+
+  /* Utility: repeat & shuffle block */
+  const repeatBlock=(arr,n)=>{let out=[];for(let i=0;i<n;i++){out=[...out,...shuffle([...arr])];}return out;};
+
+  /* === CSV LOAD === */
+  async function loadCSV(){
+    try{
+      const text = await fetch(CSV_PATH).then(r=>r.text());
+      const data = Papa.parse(text,{header:true,skipEmptyLines:true}).data;
+      const preBase   = data.filter(d=>d.phase.trim()==='pre');
+      const trainBase = data.filter(d=>d.phase.trim()==='train');
+      const postBase  = data.filter(d=>d.phase.trim()==='post');
+
+      const preRep   = repeatBlock(preBase,PRE_REPS);
+      const trainRep = repeatBlock(trainBase,TRAIN_REPS);
+      const postRep  = repeatBlock(postBase,POST_REPS);
+
+      firstTrainIdx = preRep.length;
+      firstPostIdx  = preRep.length + trainRep.length;
+      trials        = [...preRep,...trainRep,...postRep];
+
+      $('#loading').classList.add('hidden');
+      $('#startBtn').disabled=false;
+      $('#startArea').classList.remove('hidden');
+    }catch(e){ $('#loading').textContent='CSV 로드 실패:'+e; }
+  }
+
+  /* === AUDIO === */
+  function playAudio(file){
+    const src=file.includes('/')?file:AUDIO_DIR+file;
+    if(currentAudio){currentAudio.pause();}
+    currentAudio=new Audio(src);
+    currentAudio.play().catch(console.error);
+  }
+
+  /* === PHASE MESSAGE === */
+  function phaseMsg(type){
+    $('#trialArea').classList.add('hidden');
+    const msg= type==='train'
+      ? '지금부터는 <strong>트레이닝</strong>이 진행됩니다.<br>버튼을 누르시면, 정답이었는지 아닌지가 효과음과 함께 화면에 표시될 것입니다.<br>최대한 많은 정답을 맞힐 수 있도록 최선을 다해 주세요.<br>준비되셨다면 다음 버튼을 눌러 진행하세요.'
+      : '지금부터는 <strong>확인 테스트</strong>를 진행합니다.<br>다음 버튼을 눌러 진행하세요.';
+    $('#phaseMsg').innerHTML=msg;
+    $('#phaseArea').classList.remove('hidden');
+    $('#phaseNextBtn').onclick=()=>{$('#phaseArea').classList.add('hidden');nextTrial();};
+  }
+
+  /* === FLOW === */
+  function startExp(){ $('#startArea').classList.add('hidden'); idx=-1; nextTrial(); }
+
+  function nextTrial(){
+    idx++;
+    if(idx===firstTrainIdx && !trainShown){ trainShown=true; idx--; return phaseMsg('train'); }
+    if(idx===firstPostIdx && !postShown ){ postShown =true; idx--; return phaseMsg('post'); }
+    if(idx>=trials.length) return finishExp();
+
+    const t=trials[idx];
+    $('#feedback').classList.add('hidden');
+    $('#instruction').classList.remove('hidden');
+    const area=$('#choiceArea'); area.innerHTML='';
+    [t.opt1,t.opt2].forEach(opt=>{const b=document.createElement('button');b.textContent=opt;b.onclick=()=>choose(t,opt);area.appendChild(b);});
+    $('#trialArea').classList.remove('hidden');
+    setTimeout(()=>playAudio(t.audio),AUDIO_DELAY);
+  }
+
+  function choose(trial, choiceText){
+    const isTrain = trial.phase.trim() === 'train';
+    const choiceKey = (choiceText === trial.opt1) ? 'opt1' : 'opt2';
+    const isCorrect = isTrain ? (choiceKey === trial.answer.trim()) : '';
+
+    logs.push({type:trial.type,audio:trial.audio,cue1:trial.cue1,cue2:trial.cue2,phase:trial.phase,choice:choiceKey,correct:isCorrect});
+
+    $('#instruction').classList.add('hidden');
+    $('#choiceArea').innerHTML='';
+
+    if(isTrain){
+      const fb=$('#feedback');
+      fb.textContent=isCorrect?'정답입니다!':'정답이 아닙니다';
+      fb.className=isCorrect?'correct':'wrong';
+      fb.classList.remove('hidden');
+      playAudio(isCorrect?SOUND_OK:SOUND_BEEP);
+      setTimeout(()=>nextTrial(),1000);
+    }else{
+      setTimeout(()=>nextTrial(),250);
+    }
+  }
+
+  /* === FINISH === */
+  function finishExp(){ $('#trialArea').classList.add('hidden'); $('#finishArea').classList.remove('hidden'); }
+  function dlCSV(){
+    const head='type,audio,cue1,cue2,phase,choice,correct\n';
+    const rows=logs.map(l=>[l.type,l.audio,l.cue1,l.cue2,l.phase,l.choice,l.correct].join(',')).join('\n');
+    const blob=new Blob(["\uFEFF"+head+rows],{type:'text/csv;charset=utf-8;'});
+    const a=document.createElement('a');
+    a.href=URL.createObjectURL(blob); a.download='results.csv'; a.click();
+  }
+
+  /* === INIT === */
+  $('#startBtn').onclick=startExp; $('#downloadBtn').onclick=dlCSV; loadCSV();
+  </script>
+</body>
+</html>
